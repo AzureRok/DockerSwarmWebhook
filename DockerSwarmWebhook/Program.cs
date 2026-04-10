@@ -15,8 +15,9 @@ var app = builder.Build();
 // ---------- Security key middleware ----------
 // Supports Azure-style ?code=<key> query parameter or x-webhook-key header.
 // When WEBHOOK_SECRET_KEY is not set, all requests are allowed.
-var secretKey = app.Configuration["Webhook:SecretKey"]
-    ?? Environment.GetEnvironmentVariable("WEBHOOK_SECRET_KEY");
+var secretKey = app.Configuration["Webhook:SecretKey"];
+if (string.IsNullOrEmpty(secretKey))
+    secretKey = Environment.GetEnvironmentVariable("WEBHOOK_SECRET_KEY");
 
 if (!string.IsNullOrEmpty(secretKey))
 {
