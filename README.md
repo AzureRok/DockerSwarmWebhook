@@ -1,6 +1,7 @@
 # Docker Swarm Webhook
 
 [![Docker Hub](https://img.shields.io/docker/v/holosheep/docker-swarm-webhook?label=Docker%20Hub&sort=semver)](https://hub.docker.com/r/holosheep/docker-swarm-webhook)
+[![Docker Hub](https://img.shields.io/docker/pulls/holosheep/docker-swarm-webhook?label=Docker%20Hub)](https://hub.docker.com/r/holosheep/docker-swarm-webhook)
 [![Build & Push](https://github.com/AzureRok/DockerSwarmWebhook/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/AzureRok/DockerSwarmWebhook/actions/workflows/docker-publish.yml)
 
 A .NET webhook server for managing Docker Swarm services via HTTP calls. Inspired by [zazuko/swarm-webhook](https://github.com/zazuko/swarm-webhook) with added security key authentication and forced image re-pull on restart.
@@ -177,8 +178,8 @@ Call the restart webhook from your CI/CD pipeline after pushing a new image:
 ## Building from Source
 
 ```bash
-git clone https://github.com/holosheep/docker-swarm-webhook.git
-cd docker-swarm-webhook
+git clone https://github.com/AzureRok/DockerSwarmWebhook.git
+cd DockerSwarmWebhook
 docker build -f DockerSwarmWebhook/Dockerfile -t holosheep/docker-swarm-webhook:latest .
 ```
 
