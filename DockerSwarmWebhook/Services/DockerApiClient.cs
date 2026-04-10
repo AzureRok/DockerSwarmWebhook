@@ -41,29 +41,40 @@ public sealed class DockerApiClient : IDisposable
             baseAddress = new Uri("http://localhost/");
         }
 
-        _http = new HttpClient(handler) { BaseAddress = baseAddress };
+        _http = new HttpClient(handler)
+        {
+            BaseAddress = baseAddress,
+            // Pin to HTTP/1.1 — Docker Engine does not speak HTTP/2.
+            DefaultRequestVersion = new Version(1, 1),
+            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+        };
     }
 
     public async Task<List<DockerService>> ListServicesAsync(CancellationToken ct = default)
     {
-        var services = await _http.GetFromJsonAsync(
-            "v1.41/services",
-            AppJsonContext.Default.ListDockerService,
-            ct);
+        // No version prefix — Docker accepts unversioned paths and uses its own current API version.
+        using var response = await _http.GetAsync("services", HttpCompletionOption.ResponseHeadersRead, ct);
+        await EnsureSuccessAsync(response, ct);
+        var services = await response.Content.ReadFromJsonAsync(AppJsonContext.Default.ListDockerService, ct);
         return services ?? [];
     }
 
     public async Task UpdateServiceAsync(string serviceId, ulong version, ServiceSpec spec, CancellationToken ct = default)
     {
         using var content = JsonContent.Create(spec, AppJsonContext.Default.ServiceSpec);
-        var response = await _http.PostAsync(
-            $"v1.41/services/{serviceId}/update?version={version}",
-            content,
-            ct);
-        response.EnsureSuccessStatusCode();
+        using var response = await _http.PostAsync($"services/{serviceId}/update?version={version}", content, ct);
+        await EnsureSuccessAsync(response, ct);
+    }
+
+    /// <summary>Throws with the full response body included so Docker error messages are visible in logs.</summary>
+    private static async Task EnsureSuccessAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        if (response.IsSuccessStatusCode) return;
+        var body = await response.Content.ReadAsStringAsync(ct);
+        throw new HttpRequestException(
+            $"Docker API {response.RequestMessage?.Method} {response.RequestMessage?.RequestUri?.PathAndQuery} " +
+            $"→ {(int)response.StatusCode} {response.ReasonPhrase}: {body}");
     }
 
     public void Dispose() => _http.Dispose();
 }
-
-
