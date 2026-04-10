@@ -1,7 +1,7 @@
 # Docker Swarm Webhook
 
-[![Docker Hub](https://img.shields.io/docker/v/holosheep/docker-swarm-webhook?label=Docker%20Hub&sort=semver)](https://hub.docker.com/r/holosheep/docker-swarm-webhook)
-[![Docker Hub](https://img.shields.io/docker/pulls/holosheep/docker-swarm-webhook?label=Docker%20Hub)](https://hub.docker.com/r/holosheep/docker-swarm-webhook)
+[![Docker Hub](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fhub.docker.com%2Fv2%2Frepositories%2Fholosheep%2Fdocker-swarm-webhook%2Ftags%2F%3Fpage_size%3D1%26ordering%3Dlast_updated&query=%24.results%5B0%5D.name&label=Docker%20Hub&logo=docker&color=blue)](https://hub.docker.com/r/holosheep/docker-swarm-webhook)
+[![Docker Pulls](https://img.shields.io/docker/pulls/holosheep/docker-swarm-webhook)](https://hub.docker.com/r/holosheep/docker-swarm-webhook)
 [![Build & Push](https://github.com/AzureRok/DockerSwarmWebhook/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/AzureRok/DockerSwarmWebhook/actions/workflows/docker-publish.yml)
 
 A .NET webhook server for managing Docker Swarm services via HTTP calls. Inspired by [zazuko/swarm-webhook](https://github.com/zazuko/swarm-webhook) with added security key authentication and forced image re-pull on restart.
