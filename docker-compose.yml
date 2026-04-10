@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  webhook:
+    image: holosheep/docker-swarm-webhook:latest
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    ports:
+      - "3000:3000"
+    environment:
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=3000
+      # Set a secret key to secure webhook calls (Azure-style).
+      # When set, requests must include ?code=<key> or x-webhook-key header.
+      - WEBHOOK_SECRET_KEY=your-secret-key-here
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+
+  # Example: a service that can be controlled via webhook
+  nginx:
+    image: nginx:1-alpine
+    deploy:
+      mode: replicated
+      replicas: 0
+      labels:
+        - swarm.webhook.enabled=true
+        - swarm.webhook.name=nginx
+        # Optional: set desired replica count (default is 1)
+        # - swarm.webhook.replicas=2
+      restart_policy:
+        condition: none
