@@ -18,4 +18,6 @@ FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble-chiseled AS final
 WORKDIR /app
 EXPOSE 3000
 COPY --from=build /app/publish .
+# Run as root — required to access the bind-mounted /var/run/docker.sock (owned by root:docker on the host).
+USER root
 ENTRYPOINT ["/app/DockerSwarmWebhook"]
