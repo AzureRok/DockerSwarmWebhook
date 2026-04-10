@@ -1,6 +1,3 @@
-using Docker.DotNet;
-using Docker.DotNet.Models;
-
 namespace DockerSwarmWebhook.Services;
 
 public sealed class DockerSwarmService : IDisposable
@@ -10,7 +7,7 @@ public sealed class DockerSwarmService : IDisposable
     private const string LabelReplicas = "swarm.webhook.replicas";
     private const ulong DefaultReplicas = 1;
 
-    private readonly DockerClient _client;
+    private readonly DockerApiClient _client;
     private readonly ILogger<DockerSwarmService> _logger;
 
     public DockerSwarmService(ILogger<DockerSwarmService> logger)
@@ -18,28 +15,15 @@ public sealed class DockerSwarmService : IDisposable
         _logger = logger;
 
         var dockerHost = Environment.GetEnvironmentVariable("DOCKER_HOST");
-        Uri endpoint;
+        _client = new DockerApiClient(dockerHost);
 
-        if (!string.IsNullOrEmpty(dockerHost))
-        {
-            endpoint = new Uri(dockerHost);
-        }
-        else if (OperatingSystem.IsWindows())
-        {
-            endpoint = new Uri("npipe://./pipe/docker_engine");
-        }
-        else
-        {
-            endpoint = new Uri("unix:///var/run/docker.sock");
-        }
-
-        _client = new DockerClientConfiguration(endpoint).CreateClient();
-        _logger.LogInformation("Docker client configured with endpoint: {Endpoint}", endpoint);
+        _logger.LogInformation("Docker client configured (host: {Host})",
+            string.IsNullOrEmpty(dockerHost) ? "unix:///var/run/docker.sock" : dockerHost);
     }
 
     public async Task<IReadOnlyList<WebhookServiceInfo>> ListEnabledServicesAsync(CancellationToken ct = default)
     {
-        var services = await _client.Swarm.ListServicesAsync(cancellationToken: ct);
+        var services = await _client.ListServicesAsync(ct);
 
         return services
             .Where(s => s.Spec.Labels != null
@@ -72,18 +56,11 @@ public sealed class DockerSwarmService : IDisposable
             return WebhookResult.NotFound(webhookName);
 
         var desiredReplicas = GetDesiredReplicas(service);
-        service.Spec.Mode ??= new ServiceMode();
-        service.Spec.Mode.Replicated ??= new ReplicatedService();
+        service.Spec.Mode ??= new DockerServiceMode();
+        service.Spec.Mode.Replicated ??= new ReplicatedServiceMode();
         service.Spec.Mode.Replicated.Replicas = desiredReplicas;
 
-        await _client.Swarm.UpdateServiceAsync(
-            service.ID,
-            new ServiceUpdateParameters
-            {
-                Service = service.Spec,
-                Version = (long)service.Version.Index
-            },
-            ct);
+        await _client.UpdateServiceAsync(service.ID, service.Version.Index, service.Spec, ct);
 
         _logger.LogInformation("Started service {ServiceName} (webhook: {WebhookName}) with {Replicas} replica(s)",
             service.Spec.Name, webhookName, desiredReplicas);
@@ -97,18 +74,11 @@ public sealed class DockerSwarmService : IDisposable
         if (service == null)
             return WebhookResult.NotFound(webhookName);
 
-        service.Spec.Mode ??= new ServiceMode();
-        service.Spec.Mode.Replicated ??= new ReplicatedService();
+        service.Spec.Mode ??= new DockerServiceMode();
+        service.Spec.Mode.Replicated ??= new ReplicatedServiceMode();
         service.Spec.Mode.Replicated.Replicas = 0;
 
-        await _client.Swarm.UpdateServiceAsync(
-            service.ID,
-            new ServiceUpdateParameters
-            {
-                Service = service.Spec,
-                Version = (long)service.Version.Index
-            },
-            ct);
+        await _client.UpdateServiceAsync(service.ID, service.Version.Index, service.Spec, ct);
 
         _logger.LogInformation("Stopped service {ServiceName} (webhook: {WebhookName})",
             service.Spec.Name, webhookName);
@@ -124,22 +94,16 @@ public sealed class DockerSwarmService : IDisposable
 
         // Increment ForceUpdate to force Docker to re-pull and recreate all tasks.
         // This is the equivalent of `docker service update --force`.
+        service.Spec.TaskTemplate ??= new TaskSpec();
         service.Spec.TaskTemplate.ForceUpdate += 1;
 
         // Ensure replicas are set to the desired count (in case the service was stopped).
         var desiredReplicas = GetDesiredReplicas(service);
-        service.Spec.Mode ??= new ServiceMode();
-        service.Spec.Mode.Replicated ??= new ReplicatedService();
+        service.Spec.Mode ??= new DockerServiceMode();
+        service.Spec.Mode.Replicated ??= new ReplicatedServiceMode();
         service.Spec.Mode.Replicated.Replicas = desiredReplicas;
 
-        await _client.Swarm.UpdateServiceAsync(
-            service.ID,
-            new ServiceUpdateParameters
-            {
-                Service = service.Spec,
-                Version = (long)service.Version.Index
-            },
-            ct);
+        await _client.UpdateServiceAsync(service.ID, service.Version.Index, service.Spec, ct);
 
         _logger.LogInformation(
             "Force-restarted service {ServiceName} (webhook: {WebhookName}) with {Replicas} replica(s)",
@@ -149,9 +113,9 @@ public sealed class DockerSwarmService : IDisposable
             $"Service '{webhookName}' force-restarted with {desiredReplicas} replica(s). Image will be re-pulled.");
     }
 
-    private async Task<SwarmService?> FindServiceByWebhookNameAsync(string webhookName, CancellationToken ct)
+    private async Task<DockerService?> FindServiceByWebhookNameAsync(string webhookName, CancellationToken ct)
     {
-        var services = await _client.Swarm.ListServicesAsync(cancellationToken: ct);
+        var services = await _client.ListServicesAsync(ct);
 
         return services.FirstOrDefault(s =>
         {
@@ -167,7 +131,7 @@ public sealed class DockerSwarmService : IDisposable
         });
     }
 
-    private static ulong GetDesiredReplicas(SwarmService service)
+    private static ulong GetDesiredReplicas(DockerService service)
     {
         if (service.Spec.Labels != null
             && service.Spec.Labels.TryGetValue(LabelReplicas, out var replicasStr)
@@ -180,8 +144,5 @@ public sealed class DockerSwarmService : IDisposable
         return DefaultReplicas;
     }
 
-    public void Dispose()
-    {
-        _client.Dispose();
-    }
+    public void Dispose() => _client.Dispose();
 }

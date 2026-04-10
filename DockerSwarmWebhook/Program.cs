@@ -1,8 +1,12 @@
 using DockerSwarmWebhook.Services;
 
-var builder = WebApplication.CreateBuilder(args);
+var builder = WebApplication.CreateSlimBuilder(args);
 
 builder.Services.AddSingleton<DockerSwarmService>();
+
+// Register source-generated JSON context for Native AOT serialization.
+builder.Services.ConfigureHttpJsonOptions(opts =>
+    opts.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonContext.Default));
 
 // Allow SERVER_HOST / SERVER_PORT env vars for compatibility with the original swarm-webhook image.
 var serverHost = Environment.GetEnvironmentVariable("SERVER_HOST") ?? "0.0.0.0";
@@ -30,7 +34,9 @@ if (!string.IsNullOrEmpty(secretKey))
             && !string.Equals(codeFromHeader, secretKey, StringComparison.Ordinal))
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-            await context.Response.WriteAsJsonAsync(new { error = "Unauthorized. Provide a valid 'code' query parameter or 'x-webhook-key' header." });
+            await context.Response.WriteAsJsonAsync(
+                new ErrorResponse("Unauthorized. Provide a valid 'code' query parameter or 'x-webhook-key' header."),
+                AppJsonContext.Default.ErrorResponse);
             return;
         }
 
@@ -50,28 +56,28 @@ else
 app.MapGet("/", async (DockerSwarmService docker, CancellationToken ct) =>
 {
     var services = await docker.ListEnabledServicesAsync(ct);
-    return Results.Ok(services);
+    return TypedResults.Ok(services);
 });
 
 // POST|GET /start/{name} — Scale service up to desired replicas
 app.MapMethods("/start/{name}", ["GET", "POST"], async (string name, DockerSwarmService docker, CancellationToken ct) =>
 {
     var result = await docker.StartServiceAsync(name, ct);
-    return Results.Json(new { result.Message }, statusCode: result.StatusCode);
+    return TypedResults.Json(new ApiResponse(result.Message), AppJsonContext.Default.ApiResponse, statusCode: result.StatusCode);
 });
 
 // POST|GET /stop/{name} — Scale service down to 0
 app.MapMethods("/stop/{name}", ["GET", "POST"], async (string name, DockerSwarmService docker, CancellationToken ct) =>
 {
     var result = await docker.StopServiceAsync(name, ct);
-    return Results.Json(new { result.Message }, statusCode: result.StatusCode);
+    return TypedResults.Json(new ApiResponse(result.Message), AppJsonContext.Default.ApiResponse, statusCode: result.StatusCode);
 });
 
 // POST|GET /restart/{name} — Force-restart with image re-pull (docker service update --force)
 app.MapMethods("/restart/{name}", ["GET", "POST"], async (string name, DockerSwarmService docker, CancellationToken ct) =>
 {
     var result = await docker.RestartServiceAsync(name, ct);
-    return Results.Json(new { result.Message }, statusCode: result.StatusCode);
+    return TypedResults.Json(new ApiResponse(result.Message), AppJsonContext.Default.ApiResponse, statusCode: result.StatusCode);
 });
 
 app.Run();

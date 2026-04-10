@@ -1,27 +1,18 @@
-# See https://aka.ms/customizecontainer to learn how to customize your debug container and how Visual Studio uses this Dockerfile to build your images for faster debugging.
-
-# This stage is used when running from VS in fast mode (Default for Debug configuration)
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS base
-WORKDIR /app
-EXPOSE 3000
-
-# This stage is used to build the service project
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
-ARG BUILD_CONFIGURATION=Release
+# Build stage — SDK image compiles to a native self-contained binary via PublishAot=true in the csproj.
+# --platform=$BUILDPLATFORM runs the SDK on the build host; -a $TARGETARCH cross-compiles for the target arch.
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+ARG TARGETARCH
 WORKDIR /src
 COPY ["DockerSwarmWebhook/DockerSwarmWebhook.csproj", "DockerSwarmWebhook/"]
-RUN dotnet restore "./DockerSwarmWebhook/DockerSwarmWebhook.csproj"
+RUN dotnet restore "./DockerSwarmWebhook/DockerSwarmWebhook.csproj" -a $TARGETARCH
 COPY . .
 WORKDIR "/src/DockerSwarmWebhook"
-RUN dotnet build "./DockerSwarmWebhook.csproj" -c $BUILD_CONFIGURATION -o /app/build
+RUN dotnet publish "./DockerSwarmWebhook.csproj" -c Release -a $TARGETARCH -o /app/publish
 
-# This stage is used to publish the service project to be copied to the final stage
-FROM build AS publish
-ARG BUILD_CONFIGURATION=Release
-RUN dotnet publish "./DockerSwarmWebhook.csproj" -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
-
-# This stage is used in production or when running from VS in regular mode (Default when not using the Debug configuration)
-FROM base AS final
+# Final stage — Ubuntu Noble Chiseled (distroless-style) with only the native runtime dependencies.
+# No .NET runtime needed: the binary is self-contained (Native AOT).
+FROM mcr.microsoft.com/dotnet/runtime-deps:10.0-noble-chiseled AS final
 WORKDIR /app
-COPY --from=publish /app/publish .
-ENTRYPOINT ["dotnet", "DockerSwarmWebhook.dll"]
+EXPOSE 3000
+COPY --from=build /app/publish .
+ENTRYPOINT ["/app/DockerSwarmWebhook"]
