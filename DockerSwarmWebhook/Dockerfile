@@ -1,7 +1,10 @@
 # Build stage — SDK image compiles to a native self-contained binary via PublishAot=true in the csproj.
-# --platform=$BUILDPLATFORM runs the SDK on the build host; -a $TARGETARCH cross-compiles for the target arch.
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG TARGETARCH
+# Native AOT prerequisites: clang (platform linker) and zlib1g-dev (compression headers)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends clang zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY ["DockerSwarmWebhook/DockerSwarmWebhook.csproj", "DockerSwarmWebhook/"]
 RUN dotnet restore "./DockerSwarmWebhook/DockerSwarmWebhook.csproj" -a $TARGETARCH
