@@ -59,6 +59,16 @@ app.MapGet("/", async (DockerSwarmService docker, CancellationToken ct) =>
     return TypedResults.Ok(services);
 });
 
+// GET /diagnostics — Safe runtime diagnostics
+app.MapGet("/diagnostics", (DockerSwarmService docker) =>
+    TypedResults.Json(
+        new DiagnosticsResponse(
+            docker.DockerHost,
+            docker.RegistryAuthConfigured,
+            docker.RegistryAuthValid,
+            docker.RegistryAuthLoadedFromDockerConfig),
+        AppJsonContext.Default.DiagnosticsResponse));
+
 // POST|GET /start/{name} — Scale service up to desired replicas
 app.MapMethods("/start/{name}", ["GET", "POST"], async (string name, DockerSwarmService docker, CancellationToken ct) =>
 {

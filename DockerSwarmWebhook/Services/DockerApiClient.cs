@@ -9,9 +9,12 @@ namespace DockerSwarmWebhook.Services;
 public sealed class DockerApiClient : IDisposable
 {
     private readonly HttpClient _http;
+    private readonly string? _registryAuth;
 
-    public DockerApiClient(string? dockerHost = null)
+    public DockerApiClient(string? dockerHost = null, string? registryAuth = null)
     {
+        _registryAuth = string.IsNullOrWhiteSpace(registryAuth) ? null : registryAuth;
+
         Uri baseAddress;
         SocketsHttpHandler handler;
 
@@ -59,10 +62,24 @@ public sealed class DockerApiClient : IDisposable
         return services ?? [];
     }
 
-    public async Task UpdateServiceAsync(string serviceId, ulong version, ServiceSpec spec, CancellationToken ct = default)
+    public async Task UpdateServiceAsync(string serviceId, ulong version, ServiceSpec spec, string? registryAuth = null, CancellationToken ct = default)
     {
         using var content = JsonContent.Create(spec, AppJsonContext.Default.ServiceSpec);
-        using var response = await _http.PostAsync($"services/{serviceId}/update?version={version}", content, ct);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"services/{serviceId}/update?version={version}&queryRegistry=true&registryAuthFrom=spec")
+        {
+            Content = content
+        };
+
+        var effectiveRegistryAuth = string.IsNullOrWhiteSpace(registryAuth) ? _registryAuth : registryAuth;
+
+        if (effectiveRegistryAuth != null)
+        {
+            request.Headers.TryAddWithoutValidation("X-Registry-Auth", effectiveRegistryAuth);
+        }
+
+        using var response = await _http.SendAsync(request, ct);
         await EnsureSuccessAsync(response, ct);
     }
 

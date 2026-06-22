@@ -14,6 +14,7 @@ docker pull holosheep/docker-swarm-webhook:latest
 
 - **Start / Stop / Restart** Swarm services through simple HTTP endpoints
 - **Force update** on restart (`docker service update --force`) — re-pulls images even when only the `latest` tag changes
+- **Optional registry auth forwarding** — supports private registries similar to `docker stack deploy --with-registry-auth`
 - **Azure-style security key** — authenticate requests via `?code=<key>` query parameter or `x-webhook-key` header
 - **Label-based discovery** — only services with `swarm.webhook.enabled=true` are controllable
 - Configurable replica count per service via labels
@@ -36,6 +37,10 @@ services:
       - SERVER_HOST=0.0.0.0
       - SERVER_PORT=3000
       - WEBHOOK_SECRET_KEY=my-secret-key
+      - DOCKER_REGISTRY_SERVER=
+      - DOCKER_REGISTRY_USERNAME=
+      - DOCKER_REGISTRY_PASSWORD=
+      - DOCKER_REGISTRY_AUTH=
     deploy:
       placement:
         constraints:
@@ -81,6 +86,7 @@ All endpoints accept both `GET` and `POST` (except listing which is `GET` only).
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/` | List all webhook-enabled services |
+| `GET` | `/diagnostics` | Show non-secret Docker and registry auth status |
 | `GET` / `POST` | `/start/{name}` | Scale service up to its desired replica count |
 | `GET` / `POST` | `/stop/{name}` | Scale service down to 0 replicas |
 | `GET` / `POST` | `/restart/{name}` | Force-restart service and re-pull the container image |
@@ -100,6 +106,15 @@ All endpoints accept both `GET` and `POST` (except listing which is `GET` only).
 **Unauthorized** — `401 Unauthorized` (when a secret key is configured)
 ```json
 { "error": "Unauthorized. Provide a valid 'code' query parameter or 'x-webhook-key' header." }
+```
+
+**Diagnostics** — `200 OK`
+```json
+{
+  "dockerHost": "unix:///var/run/docker.sock",
+  "registryAuthConfigured": true,
+  "registryAuthValid": true
+}
 ```
 
 ## Authentication
@@ -128,6 +143,11 @@ Add these labels to the `deploy` section of any Swarm service you want to contro
 | `swarm.webhook.enabled` | Yes | Set to `true` to make the service discoverable |
 | `swarm.webhook.name` | Yes | The name used in webhook URLs (`/start/{name}`) |
 | `swarm.webhook.replicas` | No | Desired replica count when starting (default: `1`) |
+| `swarm.webhook.registry.server` | No | Registry host for this service's auth payload |
+| `swarm.webhook.registry.username` | No | Registry username for this service |
+| `swarm.webhook.registry.password` | No | Registry password for this service |
+| `swarm.webhook.registry.identitytoken` | No | Registry identity token for this service |
+| `swarm.webhook.registry.auth` | No | Pre-encoded Docker `X-Registry-Auth` payload for this service |
 
 ### Example Service Configuration
 
@@ -153,6 +173,11 @@ my-service:
 | `SERVER_PORT` | `3000` | Port to listen on |
 | `WEBHOOK_SECRET_KEY` | *(empty)* | Secret key for request authentication |
 | `DOCKER_HOST` | *(auto-detected)* | Docker daemon endpoint. Defaults to `/var/run/docker.sock` on Linux or the named pipe on Windows |
+| `DOCKER_REGISTRY_SERVER` | *(optional)* | Registry host used in the Docker auth payload. If omitted, it is inferred from the service image when possible |
+| `DOCKER_REGISTRY_USERNAME` | *(empty)* | Registry username used to build Docker `X-Registry-Auth` on the fly |
+| `DOCKER_REGISTRY_PASSWORD` | *(empty)* | Registry password used to build Docker `X-Registry-Auth` on the fly |
+| `DOCKER_REGISTRY_IDENTITY_TOKEN` | *(empty)* | Registry identity token used instead of username/password |
+| `DOCKER_REGISTRY_AUTH` | *(empty)* | Base64url-encoded Docker `X-Registry-Auth` payload forwarded during service updates |
 
 ## Force Restart vs Start
 
@@ -162,6 +187,28 @@ my-service:
 | `/restart/{name}` | ✅ to desired count | ✅ | ✅ |
 
 The `/restart/{name}` endpoint increments the Swarm `ForceUpdate` counter, which is the API equivalent of `docker service update --force`. This ensures Docker pulls the latest version of the image even when the tag (e.g. `latest`) hasn't changed.
+
+For private registries, you can either set `DOCKER_REGISTRY_USERNAME` and `DOCKER_REGISTRY_PASSWORD` (plus optional `DOCKER_REGISTRY_SERVER`) or provide `DOCKER_REGISTRY_AUTH` directly. The webhook builds or forwards the Docker `X-Registry-Auth` header on service updates so restart can behave like `docker stack deploy --with-registry-auth`.
+
+Per-service registry labels take precedence over global environment/config settings. This allows different Swarm services to use different private registries or credentials.
+
+Explicit credentials take precedence over Docker config auto-discovery. If `DOCKER_REGISTRY_SERVER` is omitted, the webhook tries to infer it from the service image reference and falls back to Docker Hub for unqualified images.
+
+The pre-encoded `DOCKER_REGISTRY_AUTH` value is validated at startup. The decoded JSON must be an object containing either `username`, `password`, and `serveraddress`, or an `identitytoken`.
+
+If `DOCKER_REGISTRY_AUTH` is not set, the webhook also tries to load credentials from Docker's standard config file locations (`$DOCKER_CONFIG/config.json`, `~/.docker/config.json`, `/root/.docker/config.json`) and converts the first usable `auths` entry into an `X-Registry-Auth` payload automatically.
+
+Example payload source:
+
+```bash
+cat ~/.docker/config.json
+```
+
+Use the auth config for the target registry, serialized as JSON and base64url-encoded without padding, for example:
+
+```json
+{"username":"my-user","password":"my-password","serveraddress":"my-registry.example.com"}
+```
 
 ## CI/CD Integration
 

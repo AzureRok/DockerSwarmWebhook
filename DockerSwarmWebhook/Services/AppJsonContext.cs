@@ -6,6 +6,9 @@ namespace DockerSwarmWebhook.Services;
 
 public sealed record ApiResponse(string Message);
 public sealed record ErrorResponse(string Error);
+public sealed record DiagnosticsResponse(string DockerHost, bool RegistryAuthConfigured, bool RegistryAuthValid, bool RegistryAuthLoadedFromDockerConfig);
+public sealed record RegistryAuthPayload(string Username, string Password, string ServerAddress);
+public sealed record RegistryIdentityTokenPayload(string IdentityToken, string? ServerAddress);
 
 // ── Source-generated JSON context ────────────────────────────────────────────
 
@@ -15,6 +18,9 @@ public sealed record ErrorResponse(string Error);
 [JsonSerializable(typeof(List<WebhookServiceInfo>))]
 [JsonSerializable(typeof(ApiResponse))]
 [JsonSerializable(typeof(ErrorResponse))]
+[JsonSerializable(typeof(DiagnosticsResponse))]
+[JsonSerializable(typeof(RegistryAuthPayload))]
+[JsonSerializable(typeof(RegistryIdentityTokenPayload))]
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]
