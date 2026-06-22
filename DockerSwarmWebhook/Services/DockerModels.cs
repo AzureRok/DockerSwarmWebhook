@@ -16,6 +16,30 @@ public sealed class DockerService
     public ServiceSpec Spec { get; set; } = new();
 }
 
+public sealed class DockerTask
+{
+    [JsonPropertyName("ID")]
+    public string ID { get; set; } = "";
+
+    [JsonPropertyName("DesiredState")]
+    public string DesiredState { get; set; } = "";
+
+    [JsonPropertyName("Status")]
+    public DockerTaskStatus Status { get; set; } = new();
+}
+
+public sealed class DockerTaskStatus
+{
+    [JsonPropertyName("State")]
+    public string State { get; set; } = "";
+
+    [JsonPropertyName("Message")]
+    public string? Message { get; set; }
+
+    [JsonPropertyName("Err")]
+    public string? Err { get; set; }
+}
+
 public sealed class ServiceVersion
 {
     [JsonPropertyName("Index")]

@@ -3,6 +3,7 @@ using DockerSwarmWebhook.Services;
 var builder = WebApplication.CreateSlimBuilder(args);
 
 builder.Services.AddSingleton<DockerSwarmService>();
+builder.Services.AddSingleton<DockerCliService>();
 
 // Register source-generated JSON context for Native AOT serialization.
 builder.Services.ConfigureHttpJsonOptions(opts =>
@@ -68,6 +69,29 @@ app.MapGet("/diagnostics", (DockerSwarmService docker) =>
             docker.RegistryAuthValid,
             docker.RegistryAuthLoadedFromDockerConfig),
         AppJsonContext.Default.DiagnosticsResponse));
+
+// GET /diagnostics/{name} — Safe service diagnostics
+app.MapGet("/diagnostics/{name}", async (string name, DockerSwarmService docker, CancellationToken ct) =>
+{
+    var diagnostics = await docker.GetServiceImageDiagnosticsAsync(name, ct);
+    if (diagnostics == null)
+    {
+        return Results.Json(new ApiResponse($"No service found with webhook name '{name}'."), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status404NotFound);
+    }
+
+    return Results.Json(diagnostics, AppJsonContext.Default.ServiceImageDiagnosticsResponse);
+});
+
+app.MapGet("/diagnostics/{name}/tasks", async (string name, DockerSwarmService docker, CancellationToken ct) =>
+{
+    var diagnostics = await docker.GetServiceTaskDiagnosticsAsync(name, ct);
+    if (diagnostics == null)
+    {
+        return Results.Json(new ApiResponse($"No service found with webhook name '{name}'."), AppJsonContext.Default.ApiResponse, statusCode: StatusCodes.Status404NotFound);
+    }
+
+    return Results.Json(diagnostics, AppJsonContext.Default.ListServiceTaskDiagnosticsResponse);
+});
 
 // POST|GET /start/{name} — Scale service up to desired replicas
 app.MapMethods("/start/{name}", ["GET", "POST"], async (string name, DockerSwarmService docker, CancellationToken ct) =>

@@ -21,8 +21,11 @@ public sealed class DockerSwarmService : IDisposable
     private const string RegistryUsernameEnvVar = "DOCKER_REGISTRY_USERNAME";
     private const string RegistryPasswordEnvVar = "DOCKER_REGISTRY_PASSWORD";
     private const string RegistryIdentityTokenEnvVar = "DOCKER_REGISTRY_IDENTITY_TOKEN";
+    private const string UpdateModeConfigKey = "Docker:UpdateMode";
+    private const string UpdateModeEnvVar = "DOCKER_SWARM_UPDATE_MODE";
 
     private readonly DockerApiClient _client;
+    private readonly DockerCliService _dockerCli;
     private readonly ILogger<DockerSwarmService> _logger;
 
     public string DockerHost { get; }
@@ -35,22 +38,22 @@ public sealed class DockerSwarmService : IDisposable
     private readonly string? _registryUsername;
     private readonly string? _registryPassword;
     private readonly string? _registryIdentityToken;
+    private readonly bool _useDockerCli;
 
-    public DockerSwarmService(ILogger<DockerSwarmService> logger, IConfiguration configuration)
+    public DockerSwarmService(ILogger<DockerSwarmService> logger, ILogger<DockerApiClient> dockerApiLogger, DockerCliService dockerCli, IConfiguration configuration)
     {
         _logger = logger;
+        _dockerCli = dockerCli;
 
         var dockerHost = Environment.GetEnvironmentVariable("DOCKER_HOST");
         DockerHost = string.IsNullOrEmpty(dockerHost) ? "unix:///var/run/docker.sock" : dockerHost;
-        _registryServer = configuration[RegistryServerConfigKey] ?? Environment.GetEnvironmentVariable(RegistryServerEnvVar);
-        _registryUsername = configuration[RegistryUsernameConfigKey] ?? Environment.GetEnvironmentVariable(RegistryUsernameEnvVar);
-        _registryPassword = configuration[RegistryPasswordConfigKey] ?? Environment.GetEnvironmentVariable(RegistryPasswordEnvVar);
-        _registryIdentityToken = configuration[RegistryIdentityTokenConfigKey] ?? Environment.GetEnvironmentVariable(RegistryIdentityTokenEnvVar);
+        _registryServer = GetConfigOrEnvironmentValue(configuration, RegistryServerConfigKey, RegistryServerEnvVar);
+        _registryUsername = GetConfigOrEnvironmentValue(configuration, RegistryUsernameConfigKey, RegistryUsernameEnvVar);
+        _registryPassword = GetConfigOrEnvironmentValue(configuration, RegistryPasswordConfigKey, RegistryPasswordEnvVar);
+        _registryIdentityToken = GetConfigOrEnvironmentValue(configuration, RegistryIdentityTokenConfigKey, RegistryIdentityTokenEnvVar);
 
-        var registryAuth = configuration[RegistryAuthConfigKey];
-
-        if (string.IsNullOrWhiteSpace(registryAuth))
-            registryAuth = Environment.GetEnvironmentVariable(RegistryAuthEnvVar);
+        var registryAuth = GetConfigOrEnvironmentValue(configuration, RegistryAuthConfigKey, RegistryAuthEnvVar);
+        _useDockerCli = string.Equals(GetConfigOrEnvironmentValue(configuration, UpdateModeConfigKey, UpdateModeEnvVar), "cli", StringComparison.OrdinalIgnoreCase);
 
         if (string.IsNullOrWhiteSpace(registryAuth) && !HasExplicitRegistryCredentials())
         {
@@ -72,7 +75,7 @@ public sealed class DockerSwarmService : IDisposable
             RegistryAuthValid = true;
         }
 
-        _client = new DockerApiClient(dockerHost, _configuredRegistryAuth);
+        _client = new DockerApiClient(dockerApiLogger, dockerHost, _configuredRegistryAuth);
 
         _logger.LogInformation("Docker client configured (host: {Host})",
             DockerHost);
@@ -83,6 +86,21 @@ public sealed class DockerSwarmService : IDisposable
                 "Docker registry auth forwarding is enabled for service updates (source: {Source})",
                 RegistryAuthLoadedFromDockerConfig ? "docker-config" : HasExplicitRegistryCredentials() ? "explicit-credentials" : "explicit-config");
         }
+
+        if (_useDockerCli)
+        {
+            _logger.LogInformation("Docker service updates are configured to use Docker CLI mode");
+        }
+    }
+
+    private static string? GetConfigOrEnvironmentValue(IConfiguration configuration, string configKey, string environmentVariableName)
+    {
+        var configValue = configuration[configKey];
+        if (!string.IsNullOrWhiteSpace(configValue))
+            return configValue;
+
+        var environmentValue = Environment.GetEnvironmentVariable(environmentVariableName);
+        return string.IsNullOrWhiteSpace(environmentValue) ? null : environmentValue;
     }
 
     private bool HasExplicitRegistryCredentials()
@@ -113,18 +131,20 @@ public sealed class DockerSwarmService : IDisposable
         }
     }
 
-    private string? GetRegistryAuthForService(DockerService service)
+    private string? GetRegistryAuthForService(DockerService service, out string authSource)
     {
         var labels = service.Spec.Labels;
         var serviceRegistryAuth = GetLabelValue(labels, LabelRegistryAuth);
         if (!string.IsNullOrWhiteSpace(serviceRegistryAuth))
         {
             ValidateRegistryAuth(serviceRegistryAuth);
+            authSource = "service-label-auth";
             return serviceRegistryAuth;
         }
 
         if (HasServiceRegistryCredentials(labels))
         {
+            authSource = "service-label-credentials";
             return BuildRegistryAuth(
                 GetLabelValue(labels, LabelRegistryServer),
                 GetLabelValue(labels, LabelRegistryUsername),
@@ -135,9 +155,11 @@ public sealed class DockerSwarmService : IDisposable
 
         if (HasExplicitRegistryCredentials())
         {
+            authSource = "global-explicit-credentials";
             return BuildRegistryAuth(_registryServer, _registryUsername, _registryPassword, _registryIdentityToken, service);
         }
 
+        authSource = RegistryAuthLoadedFromDockerConfig ? "docker-config" : !string.IsNullOrWhiteSpace(_configuredRegistryAuth) ? "global-auth" : "none";
         return _configuredRegistryAuth;
     }
 
@@ -184,15 +206,7 @@ public sealed class DockerSwarmService : IDisposable
 
     private static string? TryGetRegistryServerAddress(DockerService service)
     {
-        if (service.Spec.TaskTemplate?.ExtensionData == null
-            || !service.Spec.TaskTemplate.ExtensionData.TryGetValue("ContainerSpec", out var containerSpec)
-            || containerSpec.ValueKind != System.Text.Json.JsonValueKind.Object
-            || !containerSpec.TryGetProperty("Image", out var imageElement))
-        {
-            return null;
-        }
-
-        var image = imageElement.GetString();
+        var image = TryGetServiceImage(service);
         if (string.IsNullOrWhiteSpace(image))
             return null;
 
@@ -203,6 +217,68 @@ public sealed class DockerSwarmService : IDisposable
             return firstSegment;
 
         return "https://index.docker.io/v1/";
+    }
+
+    private static string? TryGetServiceImage(DockerService service)
+    {
+        if (service.Spec.TaskTemplate?.ExtensionData == null
+            || !service.Spec.TaskTemplate.ExtensionData.TryGetValue("ContainerSpec", out var containerSpec)
+            || containerSpec.ValueKind != System.Text.Json.JsonValueKind.Object
+            || !containerSpec.TryGetProperty("Image", out var imageElement))
+        {
+            return null;
+        }
+
+        return imageElement.GetString();
+    }
+
+    private static string? NormalizeServiceImageForRegistryRefresh(DockerService service)
+    {
+        if (service.Spec.TaskTemplate?.ExtensionData == null
+            || !service.Spec.TaskTemplate.ExtensionData.TryGetValue("ContainerSpec", out var containerSpec)
+            || containerSpec.ValueKind != System.Text.Json.JsonValueKind.Object
+            || !containerSpec.TryGetProperty("Image", out var imageElement))
+        {
+            return null;
+        }
+
+        var image = imageElement.GetString();
+        if (string.IsNullOrWhiteSpace(image) || !image.Contains('@'))
+            return image;
+
+        var normalizedImage = image.Split('@', 2)[0];
+        var lastSlashIndex = normalizedImage.LastIndexOf('/');
+        var tagSeparatorIndex = normalizedImage.LastIndexOf(':');
+
+        if (tagSeparatorIndex <= lastSlashIndex)
+            return image;
+
+        using var stream = new System.IO.MemoryStream();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+
+            foreach (var property in containerSpec.EnumerateObject())
+            {
+                writer.WritePropertyName(property.Name);
+
+                if (string.Equals(property.Name, "Image", StringComparison.Ordinal))
+                {
+                    writer.WriteStringValue(normalizedImage);
+                }
+                else
+                {
+                    property.Value.WriteTo(writer);
+                }
+            }
+
+            writer.WriteEndObject();
+        }
+
+        stream.Position = 0;
+        using var normalizedDocument = System.Text.Json.JsonDocument.Parse(stream);
+        service.Spec.TaskTemplate.ExtensionData["ContainerSpec"] = normalizedDocument.RootElement.Clone();
+        return normalizedImage;
     }
 
     private static string? TryLoadRegistryAuthFromDockerConfig()
@@ -342,18 +418,65 @@ public sealed class DockerSwarmService : IDisposable
             .ToList();
     }
 
+    public async Task<ServiceImageDiagnosticsResponse?> GetServiceImageDiagnosticsAsync(string webhookName, CancellationToken ct = default)
+    {
+        var service = await FindServiceByWebhookNameAsync(webhookName, ct);
+        if (service == null)
+            return null;
+
+        _ = GetRegistryAuthForService(service, out var authSource);
+
+        return new ServiceImageDiagnosticsResponse(
+            service.Spec.Name,
+            webhookName,
+            TryGetServiceImage(service),
+            authSource);
+    }
+
+    public async Task<IReadOnlyList<ServiceTaskDiagnosticsResponse>?> GetServiceTaskDiagnosticsAsync(string webhookName, CancellationToken ct = default)
+    {
+        var service = await FindServiceByWebhookNameAsync(webhookName, ct);
+        if (service == null)
+            return null;
+
+        var tasks = await _client.ListTasksForServiceAsync(service.ID, ct);
+
+        return tasks
+            .Select(task => new ServiceTaskDiagnosticsResponse(
+                service.Spec.Name,
+                webhookName,
+                task.ID,
+                task.DesiredState,
+                task.Status.State,
+                task.Status.Message,
+                task.Status.Err))
+            .ToList();
+    }
+
     public async Task<WebhookResult> StartServiceAsync(string webhookName, CancellationToken ct = default)
     {
         var service = await FindServiceByWebhookNameAsync(webhookName, ct);
         if (service == null)
             return WebhookResult.NotFound(webhookName);
 
+        if (_useDockerCli)
+        {
+            var image = NormalizeServiceImageForRegistryRefresh(service) ?? TryGetServiceImage(service);
+            if (string.IsNullOrWhiteSpace(image))
+                throw new InvalidOperationException($"Could not determine image for service '{service.Spec.Name}'.");
+
+            await _dockerCli.RunServiceUpdateAsync(service.Spec.Name, image, force: false, ct);
+            return WebhookResult.Success($"Service '{webhookName}' started via Docker CLI.");
+        }
+
         var desiredReplicas = GetDesiredReplicas(service);
         service.Spec.Mode ??= new DockerServiceMode();
         service.Spec.Mode.Replicated ??= new ReplicatedServiceMode();
         service.Spec.Mode.Replicated.Replicas = desiredReplicas;
 
-        await _client.UpdateServiceAsync(service.ID, service.Version.Index, service.Spec, GetRegistryAuthForService(service), ct);
+        var registryAuth = GetRegistryAuthForService(service, out var authSource);
+        _logger.LogInformation("Starting service {ServiceName} using registry auth source {AuthSource}", service.Spec.Name, authSource);
+        await _client.UpdateServiceAsync(service.ID, service.Version.Index, service.Spec, registryAuth, ct);
 
         _logger.LogInformation("Started service {ServiceName} (webhook: {WebhookName}) with {Replicas} replica(s)",
             service.Spec.Name, webhookName, desiredReplicas);
@@ -367,11 +490,23 @@ public sealed class DockerSwarmService : IDisposable
         if (service == null)
             return WebhookResult.NotFound(webhookName);
 
+        if (_useDockerCli)
+        {
+            var image = NormalizeServiceImageForRegistryRefresh(service) ?? TryGetServiceImage(service);
+            if (string.IsNullOrWhiteSpace(image))
+                throw new InvalidOperationException($"Could not determine image for service '{service.Spec.Name}'.");
+
+            await _dockerCli.RunServiceUpdateAsync(service.Spec.Name, image, force: false, ct);
+            return WebhookResult.Success($"Service '{webhookName}' stopped via Docker CLI.");
+        }
+
         service.Spec.Mode ??= new DockerServiceMode();
         service.Spec.Mode.Replicated ??= new ReplicatedServiceMode();
         service.Spec.Mode.Replicated.Replicas = 0;
 
-        await _client.UpdateServiceAsync(service.ID, service.Version.Index, service.Spec, GetRegistryAuthForService(service), ct);
+        var registryAuth = GetRegistryAuthForService(service, out var authSource);
+        _logger.LogInformation("Stopping service {ServiceName} using registry auth source {AuthSource}", service.Spec.Name, authSource);
+        await _client.UpdateServiceAsync(service.ID, service.Version.Index, service.Spec, registryAuth, ct);
 
         _logger.LogInformation("Stopped service {ServiceName} (webhook: {WebhookName})",
             service.Spec.Name, webhookName);
@@ -385,10 +520,18 @@ public sealed class DockerSwarmService : IDisposable
         if (service == null)
             return WebhookResult.NotFound(webhookName);
 
-        // Increment ForceUpdate to force Docker to re-pull and recreate all tasks.
-        // This is the equivalent of `docker service update --force`.
-        service.Spec.TaskTemplate ??= new TaskSpec();
-        service.Spec.TaskTemplate.ForceUpdate += 1;
+        if (_useDockerCli)
+        {
+            var image = NormalizeServiceImageForRegistryRefresh(service) ?? TryGetServiceImage(service);
+            if (string.IsNullOrWhiteSpace(image))
+                throw new InvalidOperationException($"Could not determine image for service '{service.Spec.Name}'.");
+
+            await _dockerCli.RunServiceUpdateAsync(service.Spec.Name, image, force: true, ct);
+            return WebhookResult.Success($"Service '{webhookName}' force-restarted via Docker CLI.");
+        }
+
+        var originalImage = TryGetServiceImage(service);
+        var updateImage = NormalizeServiceImageForRegistryRefresh(service);
 
         // Ensure replicas are set to the desired count (in case the service was stopped).
         var desiredReplicas = GetDesiredReplicas(service);
@@ -396,7 +539,36 @@ public sealed class DockerSwarmService : IDisposable
         service.Spec.Mode.Replicated ??= new ReplicatedServiceMode();
         service.Spec.Mode.Replicated.Replicas = desiredReplicas;
 
-        await _client.UpdateServiceAsync(service.ID, service.Version.Index, service.Spec, GetRegistryAuthForService(service), ct);
+        var registryAuth = GetRegistryAuthForService(service, out var authSource);
+        _logger.LogInformation(
+            "Restarting service {ServiceName} with image {OriginalImage} -> {UpdateImage} using registry auth source {AuthSource}",
+            service.Spec.Name,
+            originalImage ?? "<unknown>",
+            updateImage ?? originalImage ?? "<unknown>",
+            authSource);
+
+        await _client.UpdateServiceAsync(service.ID, service.Version.Index, service.Spec, registryAuth, ct);
+
+        await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
+
+        service = await FindServiceByWebhookNameAsync(webhookName, ct);
+        if (service == null)
+            return WebhookResult.NotFound(webhookName);
+
+        service.Spec.TaskTemplate ??= new TaskSpec();
+        service.Spec.TaskTemplate.ForceUpdate += 1;
+        service.Spec.Mode ??= new DockerServiceMode();
+        service.Spec.Mode.Replicated ??= new ReplicatedServiceMode();
+        service.Spec.Mode.Replicated.Replicas = desiredReplicas;
+
+        var refreshedImage = TryGetServiceImage(service);
+        _logger.LogInformation(
+            "Force-updating service {ServiceName} after image/auth refresh. Current image is {CurrentImage}",
+            service.Spec.Name,
+            refreshedImage ?? "<unknown>");
+
+        registryAuth = GetRegistryAuthForService(service, out authSource);
+        await _client.UpdateServiceAsync(service.ID, service.Version.Index, service.Spec, registryAuth, ct);
 
         _logger.LogInformation(
             "Force-restarted service {ServiceName} (webhook: {WebhookName}) with {Replicas} replica(s)",

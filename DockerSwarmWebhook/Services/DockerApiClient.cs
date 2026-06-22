@@ -10,9 +10,11 @@ public sealed class DockerApiClient : IDisposable
 {
     private readonly HttpClient _http;
     private readonly string? _registryAuth;
+    private readonly ILogger<DockerApiClient> _logger;
 
-    public DockerApiClient(string? dockerHost = null, string? registryAuth = null)
+    public DockerApiClient(ILogger<DockerApiClient> logger, string? dockerHost = null, string? registryAuth = null)
     {
+        _logger = logger;
         _registryAuth = string.IsNullOrWhiteSpace(registryAuth) ? null : registryAuth;
 
         Uri baseAddress;
@@ -62,12 +64,21 @@ public sealed class DockerApiClient : IDisposable
         return services ?? [];
     }
 
+    public async Task<List<DockerTask>> ListTasksForServiceAsync(string serviceId, CancellationToken ct = default)
+    {
+        using var response = await _http.GetAsync($"tasks?filters=%7B%22service%22%3A%7B%22{Uri.EscapeDataString(serviceId)}%22%3Atrue%7D%7D", HttpCompletionOption.ResponseHeadersRead, ct);
+        await EnsureSuccessAsync(response, ct);
+        var tasks = await response.Content.ReadFromJsonAsync(AppJsonContext.Default.ListDockerTask, ct);
+        return tasks ?? [];
+    }
+
     public async Task UpdateServiceAsync(string serviceId, ulong version, ServiceSpec spec, string? registryAuth = null, CancellationToken ct = default)
     {
         using var content = JsonContent.Create(spec, AppJsonContext.Default.ServiceSpec);
+        var requestUri = $"services/{serviceId}/update?version={version}&queryRegistry=true&registryAuthFrom=spec";
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
-            $"services/{serviceId}/update?version={version}&queryRegistry=true&registryAuthFrom=spec")
+            requestUri)
         {
             Content = content
         };
@@ -78,6 +89,12 @@ public sealed class DockerApiClient : IDisposable
         {
             request.Headers.TryAddWithoutValidation("X-Registry-Auth", effectiveRegistryAuth);
         }
+
+        _logger.LogInformation(
+            "Sending Docker service update for {ServiceId} via {RequestUri} (registry auth attached: {HasRegistryAuth})",
+            serviceId,
+            requestUri,
+            effectiveRegistryAuth != null);
 
         using var response = await _http.SendAsync(request, ct);
         await EnsureSuccessAsync(response, ct);

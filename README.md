@@ -87,6 +87,8 @@ All endpoints accept both `GET` and `POST` (except listing which is `GET` only).
 |---|---|---|
 | `GET` | `/` | List all webhook-enabled services |
 | `GET` | `/diagnostics` | Show non-secret Docker and registry auth status |
+| `GET` | `/diagnostics/{name}` | Show non-secret image and auth-source diagnostics for one service |
+| `GET` | `/diagnostics/{name}/tasks` | Show recent Docker task states and errors for one service |
 | `GET` / `POST` | `/start/{name}` | Scale service up to its desired replica count |
 | `GET` / `POST` | `/stop/{name}` | Scale service down to 0 replicas |
 | `GET` / `POST` | `/restart/{name}` | Force-restart service and re-pull the container image |
@@ -178,6 +180,7 @@ my-service:
 | `DOCKER_REGISTRY_PASSWORD` | *(empty)* | Registry password used to build Docker `X-Registry-Auth` on the fly |
 | `DOCKER_REGISTRY_IDENTITY_TOKEN` | *(empty)* | Registry identity token used instead of username/password |
 | `DOCKER_REGISTRY_AUTH` | *(empty)* | Base64url-encoded Docker `X-Registry-Auth` payload forwarded during service updates |
+| `DOCKER_SWARM_UPDATE_MODE` | `api` | Service update mode: `api` uses the Docker Engine API, `cli` uses `docker service update --with-registry-auth` |
 
 ## Force Restart vs Start
 
@@ -229,6 +232,32 @@ git clone https://github.com/AzureRok/DockerSwarmWebhook.git
 cd DockerSwarmWebhook
 docker build -f DockerSwarmWebhook/Dockerfile -t holosheep/docker-swarm-webhook:latest .
 ```
+
+### Build and Push to Docker Hub
+
+For local publishing, use the PowerShell helper script:
+
+```powershell
+./build-and-push.ps1
+```
+
+Or on Linux/macOS, use the Bash helper script:
+
+```bash
+./build-and-push.sh
+```
+
+Optional custom tag:
+
+```powershell
+./build-and-push.ps1 -Tag 1.0.0
+```
+
+```bash
+./build-and-push.sh --tag 1.0.0
+```
+
+This builds `holosheep/docker-swarm-webhook`, pushes the requested tag, and also pushes `latest` unless `-NoLatest` is specified.
 
 ## License
 
