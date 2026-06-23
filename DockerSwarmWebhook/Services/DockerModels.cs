@@ -92,3 +92,32 @@ public sealed class TaskSpec
     public Dictionary<string, JsonElement>? ExtensionData { get; set; }
 }
 
+/// <summary>
+/// Response body of POST /services/{id}/update. Docker returns HTTP 200 even when it could not
+/// resolve a tag's digest from the registry; the reason is reported here as a non-fatal warning
+/// (e.g. "image x:latest could not be accessed on a registry to record its digest"). Ignoring this
+/// makes a failed ":latest" refresh look successful.
+/// </summary>
+public sealed class ServiceUpdateResponse
+{
+    [JsonPropertyName("Warnings")]
+    public List<string>? Warnings { get; set; }
+}
+
+/// <summary>
+/// Response body of GET /distribution/{name}/json. Returns the current registry digest of an image
+/// reference without pulling it, so we can pin "repo:tag@sha256:..." into a service spec and force
+/// Swarm to roll out the newest image for a moving tag like ":latest" or ":main".
+/// </summary>
+public sealed class DistributionInspect
+{
+    [JsonPropertyName("Descriptor")]
+    public DistributionDescriptor? Descriptor { get; set; }
+}
+
+public sealed class DistributionDescriptor
+{
+    [JsonPropertyName("digest")]
+    public string? Digest { get; set; }
+}
+

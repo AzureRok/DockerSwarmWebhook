@@ -72,7 +72,37 @@ public sealed class DockerApiClient : IDisposable
         return tasks ?? [];
     }
 
-    public async Task UpdateServiceAsync(string serviceId, ulong version, ServiceSpec spec, string? registryAuth = null, CancellationToken ct = default)
+    /// <summary>
+    /// Resolves the current registry digest of an image reference (e.g. "repo/name:tag") without pulling it,
+    /// via GET /distribution/{ref}/json. Returns null if the registry cannot be queried (e.g. missing auth).
+    /// </summary>
+    public async Task<string?> InspectDistributionDigestAsync(string imageReference, string? registryAuth = null, CancellationToken ct = default)
+    {
+        var requestUri = $"distribution/{Uri.EscapeDataString(imageReference)}/json";
+        using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+
+        var effectiveRegistryAuth = string.IsNullOrWhiteSpace(registryAuth) ? _registryAuth : registryAuth;
+        if (effectiveRegistryAuth != null)
+        {
+            request.Headers.TryAddWithoutValidation("X-Registry-Auth", effectiveRegistryAuth);
+        }
+
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            _logger.LogWarning(
+                "Could not resolve registry digest for {ImageReference} via {RequestUri}: {StatusCode} {Body}",
+                imageReference, requestUri, (int)response.StatusCode, body);
+            return null;
+        }
+
+        var inspect = await response.Content.ReadFromJsonAsync(AppJsonContext.Default.DistributionInspect, ct);
+        return inspect?.Descriptor?.Digest;
+    }
+
+    public async Task<IReadOnlyList<string>> UpdateServiceAsync(string serviceId, ulong version, ServiceSpec spec, string? registryAuth = null, CancellationToken ct = default)
     {
         using var content = JsonContent.Create(spec, AppJsonContext.Default.ServiceSpec);
         var requestUri = $"services/{serviceId}/update?version={version}&queryRegistry=true&registryAuthFrom=spec";
@@ -98,6 +128,18 @@ public sealed class DockerApiClient : IDisposable
 
         using var response = await _http.SendAsync(request, ct);
         await EnsureSuccessAsync(response, ct);
+
+        // Docker returns HTTP 200 even when it could not contact the registry to record a new digest.
+        // The reason is reported as a non-fatal warning, so surface it instead of treating 200 as success.
+        var updateResult = await response.Content.ReadFromJsonAsync(AppJsonContext.Default.ServiceUpdateResponse, ct);
+        var warnings = updateResult?.Warnings ?? [];
+
+        foreach (var warning in warnings)
+        {
+            _logger.LogWarning("Docker service update warning for {ServiceId}: {Warning}", serviceId, warning);
+        }
+
+        return warnings;
     }
 
     /// <summary>Throws with the full response body included so Docker error messages are visible in logs.</summary>

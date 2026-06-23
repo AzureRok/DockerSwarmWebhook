@@ -3,7 +3,6 @@ using DockerSwarmWebhook.Services;
 var builder = WebApplication.CreateSlimBuilder(args);
 
 builder.Services.AddSingleton<DockerSwarmService>();
-builder.Services.AddSingleton<DockerCliService>();
 
 // Register source-generated JSON context for Native AOT serialization.
 builder.Services.ConfigureHttpJsonOptions(opts =>

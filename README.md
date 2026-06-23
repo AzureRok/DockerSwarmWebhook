@@ -31,6 +31,7 @@ services:
     image: holosheep/docker-swarm-webhook:latest
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
+      - "~/.docker/config.json:/root/.docker/config.json:ro"
     ports:
       - "3000:3000"
     environment:
@@ -62,6 +63,47 @@ services:
 docker swarm init   # if not already a swarm
 docker stack deploy -c docker-compose.yml my-stack
 ```
+
+### Private Registry Setup
+
+If your Swarm services use private images and you want API-based restart/start updates to behave like `docker stack deploy --with-registry-auth`, the webhook container must be able to read a Docker `config.json` that contains an inline base64 `auth` entry.
+
+Mount the manager node's Docker config into the webhook container:
+
+```yaml
+services:
+  webhook:
+    image: holosheep/docker-swarm-webhook:latest
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "~/.docker/config.json:/root/.docker/config.json:ro"
+```
+
+Equivalent `docker run` example:
+
+```bash
+docker run -d \
+  --name docker-swarm-webhook \
+  -p 3000:3000 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v ~/.docker/config.json:/root/.docker/config.json:ro \
+  -e WEBHOOK_SECRET_KEY=my-secret-key \
+  holosheep/docker-swarm-webhook:latest
+```
+
+The mounted `config.json` must contain an inline `auths` entry like this:
+
+```json
+{
+  "auths": {
+    "my-registry.example.com": {
+      "auth": "bXktdXNlcjpteS1wYXNzd29yZA=="
+    }
+  }
+}
+```
+
+Credential helper-based configs such as `credsStore` or `credHelpers` are not supported in the chiseled container image.
 
 ### 2. Call the Webhooks
 
@@ -180,7 +222,6 @@ my-service:
 | `DOCKER_REGISTRY_PASSWORD` | *(empty)* | Registry password used to build Docker `X-Registry-Auth` on the fly |
 | `DOCKER_REGISTRY_IDENTITY_TOKEN` | *(empty)* | Registry identity token used instead of username/password |
 | `DOCKER_REGISTRY_AUTH` | *(empty)* | Base64url-encoded Docker `X-Registry-Auth` payload forwarded during service updates |
-| `DOCKER_SWARM_UPDATE_MODE` | `api` | Service update mode: `api` uses the Docker Engine API, `cli` uses `docker service update --with-registry-auth` |
 
 ## Force Restart vs Start
 
@@ -189,7 +230,7 @@ my-service:
 | `/start/{name}` | ✅ to desired count | ❌ | ❌ |
 | `/restart/{name}` | ✅ to desired count | ✅ | ✅ |
 
-The `/restart/{name}` endpoint increments the Swarm `ForceUpdate` counter, which is the API equivalent of `docker service update --force`. This ensures Docker pulls the latest version of the image even when the tag (e.g. `latest`) hasn't changed.
+The `/restart/{name}` endpoint resolves the current registry digest of the service's image tag (via the Docker Engine `distribution` inspect endpoint, using the same registry credentials as service updates) and pins `repo:tag@sha256:...` into the service spec before updating. Because Swarm only rolls out a new image when the digest in the spec changes, this guarantees a moving tag such as `latest` or `main` is actually re-pulled — not just restarted from each node's locally cached image. It also increments the Swarm `ForceUpdate` counter (the API equivalent of `docker service update --force`) so containers are recreated even when the digest is unchanged.
 
 For private registries, you can either set `DOCKER_REGISTRY_USERNAME` and `DOCKER_REGISTRY_PASSWORD` (plus optional `DOCKER_REGISTRY_SERVER`) or provide `DOCKER_REGISTRY_AUTH` directly. The webhook builds or forwards the Docker `X-Registry-Auth` header on service updates so restart can behave like `docker stack deploy --with-registry-auth`.
 
@@ -199,7 +240,9 @@ Explicit credentials take precedence over Docker config auto-discovery. If `DOCK
 
 The pre-encoded `DOCKER_REGISTRY_AUTH` value is validated at startup. The decoded JSON must be an object containing either `username`, `password`, and `serveraddress`, or an `identitytoken`.
 
-If `DOCKER_REGISTRY_AUTH` is not set, the webhook also tries to load credentials from Docker's standard config file locations (`$DOCKER_CONFIG/config.json`, `~/.docker/config.json`, `/root/.docker/config.json`) and converts the first usable `auths` entry into an `X-Registry-Auth` payload automatically.
+If `DOCKER_REGISTRY_AUTH` is not set, the webhook also tries to load credentials from Docker's standard config file locations (`$DOCKER_CONFIG/config.json`, `~/.docker/config.json`, `/root/.docker/config.json`). Each service is matched to the `auths` entry for its image registry and a fresh `X-Registry-Auth` payload is built automatically. This lets private services deployed with `docker stack deploy --with-registry-auth` keep re-pulling through the Docker Engine API — just bind-mount the manager's Docker `config.json` into the webhook container, for example `-v ~/.docker/config.json:/root/.docker/config.json:ro`.
+
+Both regular `auth` entries (username/password) and `identitytoken` entries are supported.
 
 Example payload source:
 
@@ -207,7 +250,7 @@ Example payload source:
 cat ~/.docker/config.json
 ```
 
-Use the auth config for the target registry, serialized as JSON and base64url-encoded without padding, for example:
+Use the auth config for the target registry, serialized as JSON and base64url-encoded, for example:
 
 ```json
 {"username":"my-user","password":"my-password","serveraddress":"my-registry.example.com"}
