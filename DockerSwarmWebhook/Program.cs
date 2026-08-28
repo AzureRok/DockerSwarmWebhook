@@ -107,9 +107,27 @@ app.MapMethods("/stop/{name}", ["GET", "POST"], async (string name, DockerSwarmS
 });
 
 // POST|GET /restart/{name} — Force-restart with image re-pull (docker service update --force)
-app.MapMethods("/restart/{name}", ["GET", "POST"], async (string name, DockerSwarmService docker, CancellationToken ct) =>
+// An optional JSON body { "tag": "20260828.1" } pins the service to a specific image tag before restarting.
+app.MapMethods("/restart/{name}", ["GET", "POST"], async (string name, HttpRequest request, DockerSwarmService docker, CancellationToken ct) =>
 {
-    var result = await docker.RestartServiceAsync(name, ct);
+    string? tag = null;
+    if (HttpMethods.IsPost(request.Method) && request.ContentLength is > 0)
+    {
+        try
+        {
+            var body = await request.ReadFromJsonAsync(AppJsonContext.Default.RestartRequest, ct);
+            tag = body?.Tag;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return TypedResults.Json(
+                new ApiResponse("Invalid request body. Expected JSON like { \"tag\": \"20260828.1\" }."),
+                AppJsonContext.Default.ApiResponse,
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+    }
+
+    var result = await docker.RestartServiceAsync(name, tag, ct);
     return TypedResults.Json(new ApiResponse(result.Message), AppJsonContext.Default.ApiResponse, statusCode: result.StatusCode);
 });
 

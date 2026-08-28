@@ -254,6 +254,24 @@ public sealed class DockerSwarmService : IDisposable
     }
 
     /// <summary>
+    /// Replaces the tag of an image reference with <paramref name="newTag"/>, preserving the repository/registry
+    /// portion and dropping any existing "@sha256:..." digest. Handles registries that include a port (e.g.
+    /// "registry:5000/repo:tag") by only treating a colon in the final path segment as the tag separator.
+    /// </summary>
+    private static string ReplaceImageTag(string image, string newTag)
+    {
+        var reference = StripDigest(image);
+
+        var lastSlash = reference.LastIndexOf('/');
+        var lastColon = reference.LastIndexOf(':');
+
+        // A colon denotes a tag only when it appears in the last path segment (after the final slash).
+        var repository = lastColon > lastSlash ? reference[..lastColon] : reference;
+
+        return $"{repository}:{newTag}";
+    }
+
+    /// <summary>
     /// Builds a digest-pinned reference "name:tag@sha256:..." from a (possibly already-pinned) image and a
     /// freshly resolved digest. Pinning a NEW digest into the spec is the only change Swarm reliably rolls
     /// out for moving tags such as ":latest" or ":main".
@@ -597,7 +615,7 @@ public sealed class DockerSwarmService : IDisposable
         return WebhookResult.Success($"Service '{webhookName}' stopped.");
     }
 
-    public async Task<WebhookResult> RestartServiceAsync(string webhookName, CancellationToken ct = default)
+    public async Task<WebhookResult> RestartServiceAsync(string webhookName, string? tag = null, CancellationToken ct = default)
     {
         var service = await FindServiceByWebhookNameAsync(webhookName, ct);
         if (service == null)
@@ -614,6 +632,22 @@ public sealed class DockerSwarmService : IDisposable
         service.Spec.TaskTemplate ??= new TaskSpec();
 
         var registryAuth = GetRegistryAuthForService(service, out var authSource);
+
+        // If a tag override was supplied in the request body, swap the image tag before resolving its digest.
+        // This lets callers pin the service to a specific tag (e.g. "20260828.1") instead of the moving tag
+        // currently deployed (e.g. ":latest").
+        if (!string.IsNullOrWhiteSpace(tag) && !string.IsNullOrWhiteSpace(originalImage))
+        {
+            var retagged = ReplaceImageTag(originalImage, tag.Trim());
+            if (!string.Equals(retagged, originalImage, StringComparison.Ordinal))
+            {
+                _logger.LogInformation(
+                    "Overriding image tag for service {ServiceName}: {OriginalImage} -> {RetaggedImage}",
+                    service.Spec.Name, originalImage, retagged);
+                originalImage = retagged;
+                SetServiceImage(service, retagged);
+            }
+        }
 
         // The real reason a moving tag (":latest"/":main") does not roll out: Swarm only redeploys when the
         // image DIGEST in the spec changes. Re-submitting the same tag — even with ForceUpdate — just recreates

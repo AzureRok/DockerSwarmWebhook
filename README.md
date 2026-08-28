@@ -119,6 +119,11 @@ curl -X POST "http://localhost:3000/stop/my-app?code=my-secret-key"
 
 # Force-restart a service (re-pulls the image)
 curl -X POST "http://localhost:3000/restart/my-app?code=my-secret-key"
+
+# Force-restart and switch the service to a specific image tag
+curl -X POST "http://localhost:3000/restart/my-app?code=my-secret-key" \
+  -H "Content-Type: application/json" \
+  -d '{"tag":"20260828.1"}'
 ```
 
 ## API Reference
@@ -133,7 +138,17 @@ All endpoints accept both `GET` and `POST` (except listing which is `GET` only).
 | `GET` | `/diagnostics/{name}/tasks` | Show recent Docker task states and errors for one service |
 | `GET` / `POST` | `/start/{name}` | Scale service up to its desired replica count |
 | `GET` / `POST` | `/stop/{name}` | Scale service down to 0 replicas |
-| `GET` / `POST` | `/restart/{name}` | Force-restart service and re-pull the container image |
+| `GET` / `POST` | `/restart/{name}` | Force-restart service and re-pull the container image (optional JSON body pins a specific tag) |
+
+### Request body (optional, `/restart/{name}` only)
+
+On `POST`, you may include a JSON body to change the service's image tag before restarting. This is useful for pinning the service to a fixed build (e.g. `20260828.1`) instead of the currently deployed moving tag such as `latest`:
+
+```json
+{ "tag": "20260828.1" }
+```
+
+When the body is omitted (or on `GET`), the service keeps its existing tag and is simply force-restarted. Only the tag is changed — the repository and registry portion of the image reference are preserved, and any existing digest pin is replaced with the freshly resolved digest for the new tag. Invalid JSON returns `400 Bad Request`.
 
 ### Responses
 
@@ -231,6 +246,8 @@ my-service:
 | `/restart/{name}` | ✅ to desired count | ✅ | ✅ |
 
 The `/restart/{name}` endpoint resolves the current registry digest of the service's image tag (via the Docker Engine `distribution` inspect endpoint, using the same registry credentials as service updates) and pins `repo:tag@sha256:...` into the service spec before updating. Because Swarm only rolls out a new image when the digest in the spec changes, this guarantees a moving tag such as `latest` or `main` is actually re-pulled — not just restarted from each node's locally cached image. It also increments the Swarm `ForceUpdate` counter (the API equivalent of `docker service update --force`) so containers are recreated even when the digest is unchanged.
+
+Optionally, a `POST` to `/restart/{name}` may include a JSON body `{ "tag": "<tag>" }` to switch the service to a specific image tag before the digest is resolved. Only the tag portion of the image reference is replaced; the registry/repository (including any `host:port` prefix) is preserved and any existing digest pin is dropped. This is the API equivalent of `docker service update --image repo:<tag>`, letting you promote a service from a moving tag like `latest` to a fixed build such as `20260828.1` in the same call that restarts it.
 
 For private registries, you can either set `DOCKER_REGISTRY_USERNAME` and `DOCKER_REGISTRY_PASSWORD` (plus optional `DOCKER_REGISTRY_SERVER`) or provide `DOCKER_REGISTRY_AUTH` directly. The webhook builds or forwards the Docker `X-Registry-Auth` header on service updates so restart can behave like `docker stack deploy --with-registry-auth`.
 

@@ -5,6 +5,9 @@ IMAGE_NAME="holosheep/docker-swarm-webhook"
 TAG="latest"
 DOCKERFILE="DockerSwarmWebhook/Dockerfile"
 CONTEXT="."
+PLATFORMS="linux/amd64,linux/arm64"
+BUILDER=""
+SINGLE_ARCH=0
 NO_LATEST=0
 SKIP_LOGIN=0
 DRY_RUN=0
@@ -18,6 +21,9 @@ Options:
   --image-name <name>   Image name (default: holosheep/docker-swarm-webhook)
   --dockerfile <path>   Dockerfile path (default: DockerSwarmWebhook/Dockerfile)
   --context <path>      Docker build context (default: .)
+  --platforms <list>    Comma-separated platforms for buildx (default: linux/amd64,linux/arm64)
+  --builder <name>      Optional docker buildx builder name
+	--single-arch         Use classic single-architecture docker build/push flow
   --no-latest           Do not also push :latest when tag is custom
   --skip-login          Skip docker login check
   --dry-run             Print commands without executing them
@@ -64,6 +70,18 @@ while [[ $# -gt 0 ]]; do
 	  CONTEXT="$2"
 	  shift 2
 	  ;;
+	--platforms)
+	  PLATFORMS="$2"
+	  shift 2
+	  ;;
+	--builder)
+	  BUILDER="$2"
+	  shift 2
+	  ;;
+	--single-arch)
+	  SINGLE_ARCH=1
+	  shift
+	  ;;
 	--no-latest)
 	  NO_LATEST=1
 	  shift
@@ -100,14 +118,29 @@ if [[ "$SKIP_LOGIN" != "1" ]] && ! test_docker_login; then
   step "Docker Hub login" docker login
 fi
 
-step "Building image ${tags[0]}" docker build -f "$DOCKERFILE" -t "${tags[0]}" "$CONTEXT"
+if [[ "$SINGLE_ARCH" != "1" && -n "$PLATFORMS" ]]; then
+  buildx_args=(buildx build --platform "$PLATFORMS" -f "$DOCKERFILE")
 
-for ((i=1; i<${#tags[@]}; i++)); do
-  step "Tagging image as ${tags[$i]}" docker tag "${tags[0]}" "${tags[$i]}"
-done
+  if [[ -n "$BUILDER" ]]; then
+	buildx_args+=(--builder "$BUILDER")
+  fi
 
-for image_tag in "${tags[@]}"; do
-  step "Pushing ${image_tag}" docker push "$image_tag"
-done
+  for image_tag in "${tags[@]}"; do
+	buildx_args+=(-t "$image_tag")
+  done
+
+  buildx_args+=(--push "$CONTEXT")
+  step "Building and pushing multi-arch image for ${tags[*]} on ${PLATFORMS}" docker "${buildx_args[@]}"
+else
+  step "Building image ${tags[0]}" docker build -f "$DOCKERFILE" -t "${tags[0]}" "$CONTEXT"
+
+  for ((i=1; i<${#tags[@]}; i++)); do
+	step "Tagging image as ${tags[$i]}" docker tag "${tags[0]}" "${tags[$i]}"
+  done
+
+  for image_tag in "${tags[@]}"; do
+	step "Pushing ${image_tag}" docker push "$image_tag"
+  done
+fi
 
 echo "Done. Pushed: ${tags[*]}"
